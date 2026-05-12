@@ -1,239 +1,198 @@
-import re
-import time
 import wave
 
 import matplotlib.pyplot as plt
 import numpy as np
 
 
-VARIANT_NUMBER = 29
-EXPECTED_SAMPLE_RATE = 16000
-DEFAULT_WAV_FILE = "29.wav"
-
-
-def is_wav_filename(filename):
-    """Проверяет имя файла с помощью регулярного выражения."""
-    return re.search(r"\.wav$", filename, re.IGNORECASE) is not None
-
-
-def read_positive_integer(message, max_value):
-    """Считывает положительное целое число с защитой от ошибок ввода."""
+def read_file_name():
+    """
+    Считывает имя или путь к wav-файлу.
+    """
     while True:
-        value = input(message).strip()
+        file_name = input("Введите имя или путь к wav-файлу: ").strip()
 
-        if not re.fullmatch(r"\d+", value):
-            print("Ошибка: нужно ввести целое положительное число.")
+        if file_name == "":
+            print("Ошибка: имя файла не должно быть пустым.")
             continue
 
-        value = int(value)
+        if not file_name.lower().endswith(".wav"):
+            print("Ошибка: файл должен иметь расширение .wav.")
+            continue
+
+        return file_name
+
+
+def read_positive_integer(message, max_value=None):
+    """
+    Считывает положительное целое число с клавиатуры.
+    """
+    while True:
+        user_input = input(message)
+
+        try:
+            value = int(user_input)
+        except ValueError:
+            print("Ошибка: необходимо ввести целое число.")
+            continue
 
         if value <= 0:
-            print("Ошибка: число должно быть больше нуля.")
+            print("Ошибка: число должно быть положительным.")
             continue
 
-        if value > max_value:
-            print(
-                f"В файле только {max_value} отсчетов. "
-                f"Будет использовано {max_value}."
-            )
-            return max_value
+        if max_value is not None and value > max_value:
+            print(f"Ошибка: число не должно превышать {max_value}.")
+            continue
 
         return value
 
 
-def convert_frames_to_signal(frames, sample_width, channels):
-    """Преобразует байты wav-файла в массив отсчетов."""
-    if sample_width == 1:
-        signal = np.frombuffer(frames, dtype=np.uint8).astype(np.float64)
-        signal -= 128
-    elif sample_width == 2:
-        signal = np.frombuffer(frames, dtype="<i2").astype(np.float64)
-    elif sample_width == 3:
-        signal = read_24_bit_pcm(frames)
-    elif sample_width == 4:
-        signal = np.frombuffer(frames, dtype="<i4").astype(np.float64)
-    else:
-        raise ValueError("Неподдерживаемая разрядность wav-файла.")
+def read_wav_file(file_name):
+    """
+    Читает wav-файл и возвращает отсчеты сигнала,
+    частоту дискретизации и количество каналов.
+    """
+    try:
+        with wave.open(file_name, "rb") as wav_file:
+            channels_count = wav_file.getnchannels()
+            sample_width = wav_file.getsampwidth()
+            sample_rate = wav_file.getframerate()
+            frames_count = wav_file.getnframes()
 
-    if channels > 1:
-        signal = signal.reshape(-1, channels)
-        signal = signal.mean(axis=1)
+            frames = wav_file.readframes(frames_count)
 
-    return signal
+    except FileNotFoundError:
+        print("Ошибка: файл не найден.")
+        return None, None, None
 
+    except wave.Error:
+        print("Ошибка: файл не является корректным wav-файлом.")
+        return None, None, None
 
-def read_24_bit_pcm(frames):
-    """Читает 24-битный PCM-сигнал."""
-    byte_array = np.frombuffer(frames, dtype=np.uint8)
+    if sample_width != 2:
+        print("Ошибка: программа поддерживает wav-файлы PCM signed 16 bit.")
+        print(f"Размер одного отсчета в данном файле: {sample_width} байт.")
+        return None, None, None
 
-    if len(byte_array) % 3 != 0:
-        byte_array = byte_array[:len(byte_array) - len(byte_array) % 3]
+    samples = np.frombuffer(frames, dtype=np.int16)
 
-    byte_array = byte_array.reshape(-1, 3)
+    if channels_count == 2:
+        samples = samples.reshape(-1, 2)
+        samples = samples.mean(axis=1)
 
-    signal = (
-        byte_array[:, 0].astype(np.int32)
-        | (byte_array[:, 1].astype(np.int32) << 8)
-        | (byte_array[:, 2].astype(np.int32) << 16)
-    )
+    elif channels_count != 1:
+        print("Ошибка: поддерживаются только mono или stereo wav-файлы.")
+        return None, None, None
 
-    sign_bit = 1 << 23
-    signal = (signal ^ sign_bit) - sign_bit
+    samples = samples.astype(float)
 
-    return signal.astype(np.float64)
-
-
-def read_wav_file(filename):
-    """Читает wav-файл и возвращает сигнал и параметры записи."""
-    with wave.open(filename, "rb") as wav_file:
-        channels = wav_file.getnchannels()
-        sample_width = wav_file.getsampwidth()
-        sample_rate = wav_file.getframerate()
-        frame_count = wav_file.getnframes()
-        frames = wav_file.readframes(frame_count)
-
-    signal = convert_frames_to_signal(frames, sample_width, channels)
-
-    return signal, sample_rate, channels, sample_width
+    return samples, sample_rate, channels_count
 
 
-def plot_selected_samples(signal, sample_count):
-    """Строит пунктирный график заданного количества отсчетов."""
-    samples = signal[:sample_count]
-    sample_numbers = np.arange(sample_count)
+def plot_samples(samples, sample_rate, samples_count):
+    """
+    Строит линейный пунктирный график отсчетов звукового сигнала.
+    """
+    selected_samples = samples[:samples_count]
+    sample_numbers = np.arange(samples_count)
 
     plt.figure(figsize=(10, 5))
-    plt.plot(sample_numbers, samples, linestyle="--")
-    plt.title("Первые отсчеты звукового сигнала")
-    plt.xlabel("Номер отсчета, ед.")
-    plt.ylabel("Амплитуда, отсчеты PCM")
+    plt.plot(sample_numbers, selected_samples, linestyle="--")
+    plt.title("Линейный пунктирный график отсчетов звукового сигнала")
+    plt.xlabel("Номер отсчета")
+    plt.ylabel("Амплитуда")
     plt.grid(True)
-    plt.tight_layout()
+    plt.show()
 
-
-def plot_oscillogram(signal, sample_rate):
-    """Строит осциллограмму звукового сигнала."""
-    time_values = np.arange(len(signal)) / sample_rate
+    time_values = sample_numbers / sample_rate
 
     plt.figure(figsize=(10, 5))
-    plt.plot(time_values, signal)
+    plt.plot(time_values, selected_samples, linestyle="--")
     plt.title("Осциллограмма звукового сигнала")
     plt.xlabel("Время, с")
-    plt.ylabel("Амплитуда, отсчеты PCM")
+    plt.ylabel("Амплитуда")
     plt.grid(True)
-    plt.tight_layout()
+    plt.show()
 
 
-def calculate_cepstrum(signal):
-    """Вычисляет кепстр: ОДПФ от логарифма квадрата модуля ДПФ."""
-    spectrum = np.fft.fft(signal)
+def plot_cepstrum(samples, sample_rate):
+    """
+    Выполняет кепстральный анализ по формуле:
+    ОДПФ[ln(Re**2 + Jm**2)].
+    """
+    spectrum = np.fft.fft(samples)
 
     real_part = spectrum.real
     imaginary_part = spectrum.imag
 
     power_spectrum = real_part ** 2 + imaginary_part ** 2
-    log_power_spectrum = np.log(power_spectrum + np.finfo(float).eps)
 
-    cepstrum = np.fft.ifft(log_power_spectrum).real
+    logarithmic_spectrum = np.log(power_spectrum + 1e-12)
 
-    return cepstrum
+    cepstrum = np.fft.ifft(logarithmic_spectrum).real
 
-
-def plot_cepstrum(signal, sample_rate):
-    """Строит график кепстра для всех отсчетов сигнала."""
-    cepstrum = calculate_cepstrum(signal)
-
-    half_size = len(cepstrum) // 2
-    quefrency = np.arange(half_size) / sample_rate
+    quefrency_values = np.arange(len(cepstrum)) / sample_rate
 
     plt.figure(figsize=(10, 5))
-    plt.plot(quefrency, cepstrum[:half_size], linestyle="--")
+    plt.plot(quefrency_values, cepstrum)
     plt.title("Кепстр звукового сигнала")
-    plt.xlabel("Кефренция, с")
-    plt.ylabel("Амплитуда кепстра, усл. ед.")
+    plt.xlabel("Кэфренция, с")
+    plt.ylabel("Значение кепстра")
     plt.grid(True)
-    plt.tight_layout()
-
-
-def plot_histogram(signal):
-    """Строит гистограмму отсчетов звукового сигнала."""
-    plt.figure(figsize=(10, 5))
-    plt.hist(signal, bins=50)
-    plt.title("Гистограмма отсчетов звукового сигнала")
-    plt.xlabel("Амплитудный интервал, отсчеты PCM")
-    plt.ylabel("Количество отсчетов, ед.")
-    plt.grid(True)
-    plt.tight_layout()
-
-
-def main():
-    start_time = time.time()
-
-    print("Лабораторная работа №2")
-    print("Вариант 29")
-    print("Тип графика: линейный пунктирный график")
-    print("Тип спектрального анализа: кепстр")
-    print(f"Ожидаемая частота дискретизации: {EXPECTED_SAMPLE_RATE} Гц")
-    print()
-
-    filename = input(
-        f"Введите имя wav-файла или нажмите Enter для '{DEFAULT_WAV_FILE}': "
-    ).strip()
-
-    if not filename:
-        filename = DEFAULT_WAV_FILE
-
-    if not is_wav_filename(filename):
-        print("Ошибка: файл должен иметь расширение .wav.")
-        return
-
-    try:
-        signal, sample_rate, channels, sample_width = read_wav_file(filename)
-    except FileNotFoundError:
-        print(f"Ошибка: файл '{filename}' не найден.")
-        return
-    except wave.Error:
-        print("Ошибка: файл не является корректным wav-файлом.")
-        return
-    except ValueError as error:
-        print(f"Ошибка: {error}")
-        return
-
-    if len(signal) == 0:
-        print("Ошибка: wav-файл не содержит звуковых отсчетов.")
-        return
-
-    print()
-    print("Информация о wav-файле:")
-    print(f"Имя файла: {filename}")
-    print(f"Частота дискретизации: {sample_rate} Гц")
-    print(f"Количество каналов: {channels}")
-    print(f"Размер отсчета: {sample_width * 8} бит")
-    print(f"Количество отсчетов после обработки: {len(signal)}")
-
-    if sample_rate != EXPECTED_SAMPLE_RATE:
-        print()
-        print(
-            "Предупреждение: для варианта 29 требуется частота "
-            f"{EXPECTED_SAMPLE_RATE} Гц, но в файле указано {sample_rate} Гц."
-        )
-
-    sample_count = read_positive_integer(
-        "\nВведите количество отсчетов для первого графика: ",
-        len(signal)
-    )
-
-    plot_selected_samples(signal, sample_count)
-    plot_oscillogram(signal, sample_rate)
-    plot_cepstrum(signal, sample_rate)
-    plot_histogram(signal)
-
-    print()
-    print("Графики построены.")
-    print(time.time() - start_time, "seconds")
-
     plt.show()
 
 
-if __name__ == "__main__":
-    main()
+def plot_histogram(samples):
+    """
+    Строит гистограмму распределения амплитуд отсчетов сигнала.
+    """
+    intervals_count = read_positive_integer(
+        "Введите количество амплитудных интервалов для гистограммы: "
+    )
+
+    plt.figure(figsize=(10, 5))
+    plt.hist(samples, bins=intervals_count)
+    plt.title("Гистограмма отсчетов звукового сигнала")
+    plt.xlabel("Амплитудный интервал")
+    plt.ylabel("Количество отсчетов")
+    plt.grid(True)
+    plt.show()
+
+
+def main():
+    """
+    Основная функция программы.
+    """
+    print("Вариант 29")
+    print("Программа выполняет визуализацию и кепстральный анализ wav-файла.")
+    print("Можно ввести имя файла из папки с программой или полный путь к файлу.")
+    print()
+
+    file_name = read_file_name()
+
+    samples, sample_rate, channels_count = read_wav_file(file_name)
+
+    if samples is None:
+        return
+
+    print()
+    print("Файл успешно прочитан.")
+    print(f"Имя файла: {file_name}")
+    print(f"Количество каналов: {channels_count}")
+    print(f"Частота дискретизации: {sample_rate} Гц")
+    print(f"Общее количество отсчетов: {len(samples)}")
+    print(f"Длительность сигнала: {len(samples) / sample_rate:.2f} с")
+    print()
+
+    samples_count = read_positive_integer(
+        "Введите количество отсчетов для отображения: ",
+        max_value=len(samples)
+    )
+
+    plot_samples(samples, sample_rate, samples_count)
+    plot_cepstrum(samples, sample_rate)
+    plot_histogram(samples)
+
+    print("Анализ wav-файла завершен.")
+
+
+main()
